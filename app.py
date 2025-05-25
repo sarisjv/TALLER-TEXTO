@@ -7,9 +7,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 import nltk
+from collections import Counter
 
-# Configuración inicial ligera
-st.set_page_config(page_title="Análisis de Opiniones", layout="wide")
+# Configuración ligera
+st.set_page_config(page_title="Análisis de Opiniones", layout="centered")
 st.title("📊 Analizador de Opiniones")
 
 # Verificación de recursos NLTK
@@ -18,115 +19,115 @@ try:
 except LookupError:
     nltk.download('punkt', quiet=True)
 
-# Carga diferida de modelos pesados
-MODELS_LOADED = False
+# Carga diferida y optimizada del modelo
+@st.cache_resource(ttl=3600, show_spinner=False)
+def load_sentiment_model():
+    from transformers import pipeline
+    return pipeline(
+        "sentiment-analysis",
+        model="distilbert-base-uncased-finetuned-sst-2-english",
+        device=-1,  # Forzar CPU
+        truncation=True,
+        max_length=512
+    )
 
-def load_models():
-    global MODELS_LOADED
-    if not MODELS_LOADED:
-        from transformers import pipeline
-        sentiment_analyzer = pipeline(
-            "sentiment-analysis", 
-            model="distilbert-base-uncased-finetuned-sst-2-english",
-            device=-1  # Forzar CPU
-        )
-        summarizer = pipeline(
-            "summarization", 
-            model="sshleifer/distilbart-cnn-6-6",
-            device=-1  # Forzar CPU
-        )
-        MODELS_LOADED = True
-        return sentiment_analyzer, summarizer
-    return None, None
-
-# Interfaz simplificada
+# Interfaz minimalista
 with st.sidebar:
     st.header("⚙️ Configuración")
-    max_words = st.slider("Palabras en nube", 50, 200, 100)
-    analyze_option = st.checkbox("Realizar análisis de sentimientos", True)
+    max_records = st.slider("Máx. registros a analizar", 10, 50, 20)
+    show_wordcloud = st.checkbox("Mostrar nube de palabras", True)
 
 # Función optimizada para wordcloud
 def generate_wordcloud(text):
     try:
         wordcloud = WordCloud(
-            width=800, 
-            height=400, 
+            width=600, 
+            height=300,
             background_color='white',
-            max_words=max_words
+            max_words=100
         ).generate(text)
         
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(8, 4))
         ax.imshow(wordcloud)
         ax.axis("off")
-        st.pyplot(fig)
+        st.pyplot(fig, use_container_width=True)
         plt.close(fig)
     except Exception as e:
-        st.error(f"Error generando nube de palabras: {str(e)}")
+        st.warning(f"No se pudo generar la nube de palabras: {str(e)}")
 
-# Función de análisis con manejo de errores
-def analyze_sentiment(text, analyzer):
+# Función de análisis optimizada
+def analyze_sentiment_batch(texts, analyzer):
     try:
-        if len(text) > 500:
-            text = text[:500] + "..."
-        result = analyzer(text)[0]
-        return result['label'], result['score']
+        results = analyzer(texts)
+        return [(r['label'], r['score']) for r in results]
     except Exception as e:
         st.error(f"Error en análisis: {str(e)}")
-        return "NEUTRAL", 0.5
+        return [("ERROR", 0.0)] * len(texts)
 
 # Procesamiento del archivo
-uploaded_file = st.file_uploader("Sube tus opiniones (CSV o Excel)", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader("Sube tus opiniones (CSV)", type=["csv"])
 
 if uploaded_file:
     try:
-        # Carga de datos optimizada
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
-        
-        if len(df) > 50:
-            df = df.head(50)
-            st.warning("Mostrando solo las primeras 50 filas para mejor rendimiento")
-        
+        # Carga optimizada de datos
+        df = pd.read_csv(uploaded_file).head(max_records)
         text_column = df.columns[0]
-        st.success(f"Datos cargados correctamente. {len(df)} registros encontrados.")
         
-        # Pestañas de análisis
-        tab1, tab2 = st.tabs(["Visualización", "Análisis"])
+        with st.expander("📂 Vista previa de datos"):
+            st.dataframe(df.head(3), use_container_width=True)
         
-        with tab1:
-            st.subheader("Nube de palabras")
-            all_text = " ".join(df[text_column].astype(str))
-            generate_wordcloud(all_text)
-        
-        with tab2:
-            if analyze_option:
-                with st.spinner("Cargando modelo de análisis (esto puede tomar unos segundos)..."):
-                    sentiment_analyzer, _ = load_models()
-                
-                st.subheader("Análisis de sentimientos")
-                
-                # Procesamiento por lotes
-                batch_size = 5
-                results = []
-                
-                progress_bar = st.progress(0)
-                for i in range(0, len(df), batch_size):
-                    batch = df[text_column].iloc[i:i+batch_size].tolist()
-                    batch_results = [analyze_sentiment(str(text), sentiment_analyzer) for text in batch]
-                    results.extend(batch_results)
-                    progress_bar.progress(min((i+batch_size)/len(df), 1.0))
-                
-                df['Sentimiento'] = [r[0] for r in results]
-                df['Confianza'] = [r[1] for r in results]
-                
+        # Análisis principal
+        if st.button("Analizar opiniones"):
+            with st.spinner("Cargando modelo de análisis..."):
+                analyzer = load_sentiment_model()
+            
+            # Procesamiento por lotes optimizado
+            texts = df[text_column].astype(str).tolist()
+            batch_size = 4  # Tamaño reducido para Streamlit.app
+            results = []
+            
+            progress_bar = st.progress(0)
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i+batch_size]
+                batch_results = analyze_sentiment_batch(batch, analyzer)
+                results.extend(batch_results)
+                progress_bar.progress(min((i+batch_size)/len(texts), 1.0))
+            
+            # Asignar resultados
+            df['Sentimiento'] = [r[0] for r in results]
+            df['Confianza'] = [r[1] for r in results]
+            
+            # Mostrar resultados
+            st.subheader("Resultados del análisis")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total opiniones", len(df))
                 st.bar_chart(df['Sentimiento'].value_counts())
-                st.dataframe(df[[text_column, 'Sentimiento', 'Confianza']].head(10))
-            else:
-                st.info("El análisis de sentimientos está desactivado en la configuración")
+            
+            with col2:
+                avg_confidence = df['Confianza'].mean()
+                st.metric("Confianza promedio", f"{avg_confidence:.0%}")
+                st.write(df['Sentimiento'].value_counts(normalize=True))
+            
+            if show_wordcloud:
+                st.subheader("Nube de palabras")
+                generate_wordcloud(" ".join(texts))
+            
+            st.success("Análisis completado!")
+            
+            # Opción para descargar resultados
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "Descargar resultados",
+                csv,
+                "resultados_analisis.csv",
+                "text/csv"
+            )
     
     except Exception as e:
         st.error(f"Error procesando archivo: {str(e)}")
+else:
+    st.info("Por favor, sube un archivo CSV para comenzar el análisis")
 
-  
+st.caption("Nota: Esta aplicación usa modelos optimizados para funcionar en Streamlit.app")
